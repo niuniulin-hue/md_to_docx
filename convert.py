@@ -489,8 +489,263 @@ def export_docx_to_pdf(
     raise RuntimeError("PDF export failed. Tried backends: " + " | ".join(failures))
 
 
-def _markdown_to_html_document(markdown_text: str, *, title: str) -> str:
-    """Render Markdown content into a print-friendly HTML document string."""
+# ---------------------------------------------------------------------------
+# Color palette for KDP-safe icon label spans (injected into the HTML)
+# ---------------------------------------------------------------------------
+_ICON_LABEL_COLORS: dict[str, tuple[str, str]] = {
+    # label: (foreground, background)
+    "[OK]":       ("#1a7f37", "#dafbe1"),
+    "[Done]":     ("#1a7f37", "#dafbe1"),
+    "[x]":        ("#1a7f37", "#dafbe1"),
+    "[ ]":        ("#57606a", "#f6f8fa"),
+    "[X]":        ("#cf222e", "#ffebe9"),
+    "[No]":       ("#cf222e", "#ffebe9"),
+    "[Stop]":     ("#cf222e", "#ffebe9"),
+    "[Help]":     ("#cf222e", "#ffebe9"),
+    "[Alert]":    ("#cf222e", "#ffebe9"),
+    "[Warning]":  ("#9a6700", "#fff8c5"),
+    "[Tip]":      ("#9a6700", "#fff8c5"),
+    "[Hot]":      ("#9a6700", "#fff8c5"),
+    "[Info]":     ("#0969da", "#ddf4ff"),
+    "[Note]":     ("#0969da", "#ddf4ff"),
+    "[Question]": ("#8250df", "#fbefff"),
+    "[Link]":     ("#0969da", "#ddf4ff"),
+    "[Book]":     ("#0969da", "#ddf4ff"),
+    "[Guide]":    ("#0969da", "#ddf4ff"),
+    "[Review]":   ("#0969da", "#ddf4ff"),
+    "[Goal]":     ("#1a7f37", "#dafbe1"),
+    "[Success]":  ("#1a7f37", "#dafbe1"),
+    "[Finish]":   ("#1a7f37", "#dafbe1"),
+    "[Award]":    ("#9a6700", "#fff8c5"),
+    "[Heart]":    ("#cf222e", "#ffebe9"),
+    "[Pin]":      ("#9a6700", "#fff8c5"),
+    "[Launch]":   ("#0969da", "#ddf4ff"),
+    "[Chart]":    ("#0969da", "#ddf4ff"),
+    "[Up]":       ("#1a7f37", "#dafbe1"),
+    "[Down]":     ("#cf222e", "#ffebe9"),
+    "[Steps]":    ("#57606a", "#f6f8fa"),
+    "[Refresh]":  ("#57606a", "#f6f8fa"),
+    "[Health]":   ("#1a7f37", "#dafbe1"),
+    "[Rest]":     ("#57606a", "#f6f8fa"),
+    "[Sleep]":    ("#8250df", "#fbefff"),
+    "[Calm]":     ("#8250df", "#fbefff"),
+    "[Strength]": ("#9a6700", "#fff8c5"),
+    "[Run]":      ("#9a6700", "#fff8c5"),
+    "[Walk]":     ("#57606a", "#f6f8fa"),
+    "[Swim]":     ("#0969da", "#ddf4ff"),
+    "[Ride]":     ("#0969da", "#ddf4ff"),
+    "[Stretch]":  ("#9a6700", "#fff8c5"),
+    "[Meal]":     ("#1a7f37", "#dafbe1"),
+    "[Food]":     ("#1a7f37", "#dafbe1"),
+    "[Fruit]":    ("#1a7f37", "#dafbe1"),
+    "[Vegetable]":("#1a7f37", "#dafbe1"),
+    "[Protein]":  ("#1a7f37", "#dafbe1"),
+    "[Grain]":    ("#9a6700", "#fff8c5"),
+    "[Drink]":    ("#0969da", "#ddf4ff"),
+    "[Water]":    ("#0969da", "#ddf4ff"),
+    "[Work]":     ("#57606a", "#f6f8fa"),
+    "[Laptop]":   ("#57606a", "#f6f8fa"),
+    "[Phone]":    ("#57606a", "#f6f8fa"),
+    "[Home]":     ("#57606a", "#f6f8fa"),
+    "[Lock]":     ("#9a6700", "#fff8c5"),
+    "[Open]":     ("#1a7f37", "#dafbe1"),
+    "[Medication]":("#cf222e", "#ffebe9"),
+    "[Package]":  ("#57606a", "#f6f8fa"),
+    "[Calendar]": ("#0969da", "#ddf4ff"),
+    "[List]":     ("#57606a", "#f6f8fa"),
+    "[Measure]":  ("#57606a", "#f6f8fa"),
+    "[Balance]":  ("#57606a", "#f6f8fa"),
+    "[Anchor]":   ("#57606a", "#f6f8fa"),
+    "[Direction]":("#0969da", "#ddf4ff"),
+    "[Map]":      ("#0969da", "#ddf4ff"),
+    "[Time]":     ("#57606a", "#f6f8fa"),
+    "[Morning]":  ("#9a6700", "#fff8c5"),
+    "[Day]":      ("#9a6700", "#fff8c5"),
+    "[Evening]":  ("#8250df", "#fbefff"),
+    "[Night]":    ("#8250df", "#fbefff"),
+}
+
+_ICON_LABEL_KEYS_BY_LENGTH = sorted(
+    _ICON_LABEL_COLORS.keys(), key=len, reverse=True
+)
+
+
+def _colorize_icon_labels_in_html(html: str) -> str:
+    """Replace [LabelName] text with styled colored badge spans in HTML.
+
+    Only replaces text content; skips inside HTML tags so attributes are safe.
+    """
+    if not html:
+        return html
+
+    result: list[str] = []
+    i = 0
+    length = len(html)
+
+    while i < length:
+        ch = html[i]
+
+        # Copy HTML tags verbatim (skip over them without touching content)
+        if ch == "<":
+            j = html.find(">", i)
+            if j == -1:
+                result.append(html[i:])
+                break
+            result.append(html[i : j + 1])
+            i = j + 1
+            continue
+
+        # Check for a known icon label starting at position i
+        if ch == "[":
+            matched = False
+            for label in _ICON_LABEL_KEYS_BY_LENGTH:
+                if html[i : i + len(label)] == label:
+                    fg, bg = _ICON_LABEL_COLORS[label]
+                    escaped = html_lib.escape(label)
+                    result.append(
+                        f'<span style="color:{fg};background:{bg};'
+                        f'padding:1px 5px;border-radius:3px;'
+                        f'font-weight:600;font-size:0.88em">{escaped}</span>'
+                    )
+                    i += len(label)
+                    matched = True
+                    break
+            if not matched:
+                result.append(ch)
+                i += 1
+            continue
+
+        result.append(ch)
+        i += 1
+
+    return "".join(result)
+
+
+_WEASYPRINT_CSS = """\
+@page {
+  size: A4;
+  margin: 20mm 18mm 22mm 18mm;
+}
+
+* {
+  print-color-adjust: exact;
+  box-sizing: border-box;
+}
+
+body {
+  font-family:
+    'Noto Serif CJK SC', 'Noto Serif CJK TC', 'Noto Serif CJK JP',
+    'Source Han Serif SC', 'Source Han Serif TC',
+    'Microsoft JhengHei', 'Microsoft YaHei',
+    'Noto Serif', 'Georgia',
+    'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', 'Noto Emoji',
+    serif, emoji;
+  line-height: 1.75;
+  font-size: 11pt;
+  color: #24292f;
+}
+
+/* ── Headings ─────────────────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 700;
+  line-height: 1.25;
+  margin-top: 1.4em;
+  margin-bottom: 0.4em;
+  page-break-after: avoid;
+}
+h1 { font-size: 20pt; color: #0969da;
+     border-bottom: 2px solid #d0d7de; padding-bottom: 6px; margin-top: 0; }
+h2 { font-size: 16pt; color: #0550ae;
+     border-bottom: 1px solid #d0d7de; padding-bottom: 4px; }
+h3 { font-size: 13pt; color: #1f6feb; }
+h4 { font-size: 12pt; color: #24292f; }
+h5, h6 { font-size: 11pt; color: #57606a; }
+
+/* ── Inline elements ──────────────────────────────────────────────── */
+a { color: #0969da; text-decoration: underline; }
+
+code {
+  font-family: 'Consolas', 'Cascadia Mono', 'Courier New', monospace;
+  font-size: 9.5pt;
+  color: #e3116c;
+  background: #fff0f7;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid #ffc8db;
+}
+
+strong { color: #24292f; }
+em     { color: #24292f; }
+del    { color: #57606a; }
+
+/* ── Code blocks ──────────────────────────────────────────────────── */
+pre {
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-left: 4px solid #0969da;
+  padding: 12px 14px;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+  margin: 10px 0;
+}
+pre code {
+  color: #24292f;
+  background: transparent;
+  padding: 0;
+  border: none;
+  font-size: 9pt;
+}
+
+/* ── Blockquotes ──────────────────────────────────────────────────── */
+blockquote {
+  margin: 8px 0;
+  padding: 8px 14px;
+  border-left: 4px solid #0969da;
+  background: #f0f7ff;
+  color: #24292f;
+  border-radius: 0 4px 4px 0;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────── */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+}
+th {
+  background: #ddf4ff;
+  color: #0550ae;
+  font-weight: 700;
+  padding: 8px 10px;
+  border: 1px solid #b6d9f7;
+  text-align: left;
+}
+td {
+  padding: 6px 10px;
+  border: 1px solid #d0d7de;
+  vertical-align: top;
+}
+tr:nth-child(even) td { background: #f6f8fa; }
+
+/* ── Lists ────────────────────────────────────────────────────────── */
+li { margin: 3px 0; }
+li > input[type=checkbox] { margin-right: 6px; }
+
+/* ── Images ───────────────────────────────────────────────────────── */
+img { max-width: 100%; height: auto; }
+
+/* ── Pagination hints ─────────────────────────────────────────────── */
+p, li, blockquote, table, pre { orphans: 3; widows: 3; }
+"""
+
+
+def _markdown_to_html_document(
+    markdown_text: str,
+    *,
+    title: str,
+    colorize_icon_labels: bool = False,
+) -> str:
+    """Render Markdown content into a print-friendly, fully-coloured HTML document."""
     import mistune
 
     renderer = mistune.HTMLRenderer(escape=False)
@@ -499,35 +754,28 @@ def _markdown_to_html_document(markdown_text: str, *, title: str) -> str:
         plugins=["strikethrough", "table", "task_lists", "url"],
     )
     body_html = markdown(markdown_text)
-    escaped_title = html_lib.escape(title)
+    if colorize_icon_labels:
+        body_html = _colorize_icon_labels_in_html(body_html)
 
-    # Keep the built-in CSS intentionally conservative so users can layer custom CSS.
+    escaped_title = html_lib.escape(title)
+    css_block = _WEASYPRINT_CSS
+
     return (
-        "<!doctype html>\n"
-        "<html lang=\"en\">\n"
-        "<head>\n"
-        "  <meta charset=\"utf-8\">\n"
-        f"  <title>{escaped_title}</title>\n"
-        "  <style>\n"
-        "    @page { size: A4; margin: 20mm 18mm 22mm 18mm; }\n"
-        "    body { font-family: 'Noto Serif CJK SC', 'Noto Serif CJK TC', 'Noto Serif CJK JP', 'Noto Serif', 'Segoe UI', serif; line-height: 1.6; font-size: 11pt; color: #111; }\n"
-        "    h1, h2, h3, h4, h5, h6 { font-weight: 700; line-height: 1.25; page-break-after: avoid; }\n"
-        "    p, li, blockquote, table, pre { orphans: 3; widows: 3; }\n"
-        "    a { color: #1a0dab; text-decoration: none; }\n"
-        "    code, pre { font-family: 'Consolas', 'Cascadia Mono', 'Courier New', monospace; }\n"
-        "    pre { background: #f6f8fa; padding: 10px 12px; border-radius: 4px; overflow-wrap: anywhere; }\n"
-        "    blockquote { margin: 0; padding-left: 12px; border-left: 3px solid #d0d7de; color: #444; }\n"
-        "    table { border-collapse: collapse; width: 100%; margin: 12px 0; }\n"
-        "    th, td { border: 1px solid #d0d7de; padding: 6px 8px; vertical-align: top; }\n"
-        "    th { background: #f6f8fa; }\n"
-        "    img { max-width: 100%; height: auto; }\n"
-        "  </style>\n"
-        "</head>\n"
-        "<body>\n"
-        f"{body_html}\n"
-        "</body>\n"
-        "</html>\n"
+        '<!doctype html>\n'
+        '<html lang="en">\n'
+        '<head>\n'
+        '  <meta charset="utf-8">\n'
+        f'  <title>{escaped_title}</title>\n'
+        '  <style>\n'
+        + "\n".join("    " + line for line in css_block.splitlines())
+        + '\n  </style>\n'
+        '</head>\n'
+        '<body>\n'
+        f'{body_html}\n'
+        '</body>\n'
+        '</html>\n'
     )
+
 
 
 def _normalize_markdown_for_kdp_icons(
@@ -710,7 +958,11 @@ def export_markdown_to_pdf_via_weasyprint(
         icon_map=icon_map,
     )
 
-    html_document = _markdown_to_html_document(normalized_markdown, title=md_path.stem)
+    html_document = _markdown_to_html_document(
+        normalized_markdown,
+        title=md_path.stem,
+        colorize_icon_labels=kdp_safe_icons,
+    )
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:

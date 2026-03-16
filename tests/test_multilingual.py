@@ -419,8 +419,15 @@ class MultilingualEncodingTests(unittest.TestCase):
             self.assertEqual(decoded.encoding.lower(), "utf-8")
             self.assertTrue(pdf_path.exists())
             html_string = str(seen["html_string"])
-            self.assertIn("Ship [OK]", html_string)
-            self.assertIn("Docs [Link]", html_string)
+            # Labels are wrapped in coloured badge spans when kdp_safe_icons=True
+            self.assertIn("Ship", html_string)
+            self.assertIn("[OK]", html_string)
+            # The span must carry a green foreground colour
+            self.assertIn("color:#1a7f37", html_string)
+            self.assertIn("Docs", html_string)
+            self.assertIn("[Link]", html_string)
+            # The span must carry a blue foreground colour
+            self.assertIn("color:#0969da", html_string)
             self.assertEqual(seen["target"], str(pdf_path))
             self.assertEqual(seen["stylesheets_count"], 1)
             self.assertEqual(seen["css_filename"], str(css_path))
