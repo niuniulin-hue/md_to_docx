@@ -18,6 +18,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import platform
@@ -608,6 +609,84 @@ def _raise_weasyprint_gtk_error(exc: OSError) -> None:  # pragma: no cover
     ) from exc
 
 
+def _find_gtk3_bin_dirs() -> list[Path]:
+    """Return every directory that looks like it contains GTK3 runtime DLLs."""
+    sentinel = "libgobject-2.0-0.dll"
+    candidates: list[Path] = []
+
+    # 1. Well-known install locations (our script + system-wide installers)
+    for base in filter(None, [
+        os.environ.get("LOCALAPPDATA"),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        "C:\\",
+    ]):
+        for sub in (
+            "GTK3-Runtime\\bin",
+            "GTK3-Runtime Win64\\bin",
+            "GTK3-Runtime Win32\\bin",
+            "msys64\\mingw64\\bin",
+            "msys2\\mingw64\\bin",
+        ):
+            candidates.append(Path(base) / sub)
+
+    # 2. Anything already on PATH
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if entry:
+            candidates.append(Path(entry))
+
+    return [p for p in candidates if (p / sentinel).is_file()]
+
+
+def _register_gtk3_dll_dirs() -> list[Path]:
+    """Call os.add_dll_directory() for every GTK3 bin dir found (Windows only).
+
+    Also suppresses the harmless GLib-GIO-WARNING spam that GTK3 emits on
+    Windows when it scans UWP app registrations.
+    """
+    if platform.system() != "Windows":
+        return []
+    # Prevent GTK3/GIO from scanning Windows UWP associations (harmless but noisy)
+    os.environ.setdefault("GIO_USE_VFS", "local")
+    os.environ.setdefault("GSETTINGS_BACKEND", "memory")
+    registered: list[Path] = []
+    for gtk_bin in _find_gtk3_bin_dirs():
+        try:
+            os.add_dll_directory(str(gtk_bin))  # type: ignore[attr-defined]
+            registered.append(gtk_bin)
+        except (OSError, AttributeError):
+            pass
+    return registered
+
+
+@contextlib.contextmanager
+def _suppress_c_stderr():
+    """Redirect C-level stderr (fd 2) to devnull for the duration of the block.
+
+    GTK3's GLib writes GLib-GIO-WARNING lines about UWP apps directly to fd 2,
+    bypassing Python's sys.stderr.  Redirecting at the OS level silences them
+    without hiding Python exceptions (which propagate via the exception
+    mechanism, not via stderr).
+    """
+    if platform.system() != "Windows":
+        yield
+        return
+
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        saved_fd2 = os.dup(2)
+        os.dup2(devnull_fd, 2)
+        try:
+            yield
+        finally:
+            os.dup2(saved_fd2, 2)
+            os.close(saved_fd2)
+            os.close(devnull_fd)
+    except OSError:
+        # If fd manipulation fails for any reason, run without suppression.
+        yield
+
+
 def export_markdown_to_pdf_via_weasyprint(
     md_path: Path,
     pdf_path: Path,
@@ -619,6 +698,11 @@ def export_markdown_to_pdf_via_weasyprint(
     base_url: str | None = None,
 ) -> DecodedMarkdown:
     """Export Markdown directly to PDF using WeasyPrint (Markdown -> HTML -> PDF)."""
+    # Register GTK3 DLL directories BEFORE the first import of weasyprint so
+    # that cffi can resolve libgobject / libpango / libcairo on Windows even
+    # when the user opened their terminal before the PATH was updated.
+    _register_gtk3_dll_dirs()
+
     decoded = read_markdown_text(md_path, encoding=encoding)
     normalized_markdown = _normalize_markdown_for_kdp_icons(
         decoded.text,
@@ -630,7 +714,8 @@ def export_markdown_to_pdf_via_weasyprint(
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        from weasyprint import CSS, HTML
+        with _suppress_c_stderr():
+            from weasyprint import CSS, HTML
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
             "WeasyPrint backend requires the optional 'weasyprint' dependency. "
@@ -638,9 +723,10 @@ def export_markdown_to_pdf_via_weasyprint(
         ) from exc
 
     try:
-        stylesheets = [CSS(filename=str(path)) for path in css_paths]
-        html = HTML(string=html_document, base_url=base_url or str(md_path.parent.resolve()))
-        html.write_pdf(str(pdf_path), stylesheets=stylesheets)
+        with _suppress_c_stderr():
+            stylesheets = [CSS(filename=str(path)) for path in css_paths]
+            html = HTML(string=html_document, base_url=base_url or str(md_path.parent.resolve()))
+            html.write_pdf(str(pdf_path), stylesheets=stylesheets)
     except Exception as exc:  # pragma: no cover - backend/runtime specific
         raise RuntimeError(
             "WeasyPrint PDF export failed. Verify CSS paths, fonts, and required system dependencies. "
