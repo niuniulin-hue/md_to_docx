@@ -24,6 +24,7 @@ Convert **GitHub-Flavored Markdown** (`.md`) files to well-formatted Word docume
 | Spanish / Español | ✅ |
 | German / Deutsch | ✅ |
 | Encoding auto-detection | ✅ |
+| KDP-safe icon replacement | ✅ |
 
 ## Encoding Support
 
@@ -47,6 +48,80 @@ To improve Word rendering for multilingual content, generated documents apply:
 - Code text → `Consolas` + East Asia fallback
 
 If you want your own corporate fonts, use a Word template via `--template`.
+
+## Amazon KDP / Kindle-Friendly Icon Mapping
+
+Some GitHub-style Unicode icons and emoji render inconsistently in Kindle Create / Amazon KDP workflows.
+This project now supports an **optional KDP-safe replacement mode** that converts common symbols to plain-text equivalents before writing the DOCX.
+If you do **not** pass `--kdp-safe-icons`, the original icons are preserved as-is.
+
+### Built-in examples
+
+- `✅` / `✔️` → `[OK]`
+- `☑` → `[x]`
+- `☐` → `[ ]`
+- `⚠️` → `[Warning]`
+- `ℹ️` → `[Info]`
+- `💡` → `[Tip]`
+- `🔗` → `[Link]`
+- `👉` / `➡️` → `->`
+
+### Built-in generic semantic categories
+
+The default KDP-safe mode is intentionally **generic rather than book-specific**. It maps many common emoji/icons to short reusable labels so the same Markdown can work across different books:
+
+- Status / alerts: `[OK]`, `[X]`, `[Warning]`, `[Info]`, `[Alert]`, `[No]`, `[Stop]`
+- Notes / structure: `[Note]`, `[Tip]`, `[Goal]`, `[Book]`, `[List]`, `[Package]`, `[Calendar]`, `[Guide]`, `[Link]`
+- Progress / navigation: `[Chart]`, `[Up]`, `[Down]`, `[Review]`, `[Refresh]`, `[Finish]`, `[Steps]`, `->`
+- Time / routine: `[Time]`, `[Morning]`, `[Day]`, `[Evening]`, `[Night]`
+- Health / activity: `[Strength]`, `[Run]`, `[Walk]`, `[Calm]`, `[Rest]`, `[Sleep]`, `[Health]`, `[Medication]`, `[Water]`
+- Work / devices: `[Work]`, `[Laptop]`, `[Phone]`, `[Home]`
+- Food / drink: `[Meal]`, `[Food]`, `[Fruit]`, `[Vegetable]`, `[Protein]`, `[Drink]`
+- Tone / emphasis: `[Heart]`
+
+### Automatic fallback for previously unseen icons
+
+When `--kdp-safe-icons` is enabled, the converter does **not rely only on a fixed manual table**.
+If it encounters an emoji/icon that is not already covered by the built-in semantic mappings, it automatically falls back to an ASCII-safe label derived from the Unicode name.
+
+Examples:
+
+- `🦉` → `[Owl]`
+- `🧶` → `[Yarn]`
+- `🎓` → `[Graduation Cap]`
+- `🇺🇸` → `[Flag US]`
+- `1️⃣` → `[1]`
+
+This means newly encountered icons in future books will still be normalized into KDP-friendlier plain text instead of requiring you to keep adding manual mappings one by one.
+
+Code spans and code blocks keep their code styling; when KDP-safe mode is enabled, icon glyphs inside them are also converted to ASCII-safe labels so the final DOCX avoids unsupported symbols more completely.
+
+### Enable KDP-safe replacements
+
+```bash
+python convert.py input.md -o output.docx --kdp-safe-icons
+```
+
+### Provide your own mapping JSON
+
+Create a UTF-8 JSON file such as `icon_map.json`:
+
+```json
+{
+  "✅": "[Approved]",
+  "🔗": "(URL)",
+  "💡": "Tip:"
+}
+```
+
+Then run:
+
+```bash
+python convert.py input.md -o output.docx --kdp-safe-icons --icon-map icon_map.json
+```
+
+`--icon-map` requires `--kdp-safe-icons`.
+Custom mappings override the built-in generic semantics when both are provided.
 
 ## Setup
 
@@ -79,6 +154,12 @@ python convert.py input.md -o output.docx --template my_template.docx
 python convert.py input.md -o output.docx --encoding cp950
 python convert.py input.md -o output.docx --encoding shift_jis
 python convert.py input.md -o output.docx --encoding cp1252
+
+# Replace common emoji/icons with KDP-safe text
+python convert.py input.md -o output.docx --kdp-safe-icons
+
+# Merge the built-in KDP replacements with your own JSON overrides
+python convert.py input.md -o output.docx --kdp-safe-icons --icon-map icon_map.json
 ```
 
 ## Project Structure

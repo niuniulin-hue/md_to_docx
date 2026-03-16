@@ -22,9 +22,70 @@ Deutsch: Grüße für München, Straße, äußerst.
 TRADITIONAL_CHINESE_TEXT = "# 繁體中文\n\n歡迎使用 Markdown 轉 DOCX，保留格式。\n"
 JAPANESE_TEXT = "# 日本語\n\nこんにちは、世界。マークダウンから DOCX へ変換します。\n"
 WESTERN_TEXT = "# Langues européennes\n\nFrançais: élève, façade.\nEspañol: niño, acción.\nDeutsch: Grüße, Straße.\n"
+ICON_MARKDOWN = """# Shipping ✅
+
+- [x] Published
+- [ ] Draft
+
+Visit [Docs 🔗](https://example.com)
+
+⚠️ Warning section
+
+ℹ️ Info panel
+
+👉 Start here
+
+| Item | Notes |
+|---|---|
+| Tip | 💡 Keep it simple |
+
+`Code ✅ keeps emoji`
+"""
+GENERIC_ICON_MARKDOWN = """# Routine 💪
+
+🧘‍♀️ Reset
+
+🏃‍♀️ Sprint
+
+🚫 Avoid this
+
+📦 Deliverables
+
+🔄 Weekly reset
+
+📊 Metrics
+
+📅 Calendar
+
+🩺 Health review
+
+🍽️ Meal prep
+
+☀️ Morning light
+
+💖 Encouragement
+
+`Code 🧘‍♀️ keeps emoji`
+"""
+AUTO_FALLBACK_ICON_MARKDOWN = """# Future glyphs 🦉
+
+🧶 Yarn
+
+🎓 Study
+
+🇺🇸 Flag
+
+1️⃣ First step
+
+`Code 🦉 keeps emoji`
+"""
 
 
 class MultilingualEncodingTests(unittest.TestCase):
+    def _document_xml(self, docx_path: Path) -> str:
+        with zipfile.ZipFile(docx_path) as archive:
+            return archive.read("word/document.xml").decode("utf-8")
+
     def test_utf8_multilingual_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             md_path = Path(tmp_dir) / "multilingual_utf8.md"
@@ -89,12 +150,140 @@ class MultilingualEncodingTests(unittest.TestCase):
 
             convert_file(md_path, out_path)
 
-            with zipfile.ZipFile(out_path) as archive:
-                document_xml = archive.read("word/document.xml").decode("utf-8")
+            document_xml = self._document_xml(out_path)
 
             self.assertIn('w:eastAsia="Microsoft JhengHei"', document_xml)
             self.assertIn('w:eastAsia="Yu Gothic"', document_xml)
             self.assertIn('w:ascii="Calibri"', document_xml)
+
+    def test_icons_are_preserved_when_kdp_mode_is_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "icons.md"
+            out_path = Path(tmp_dir) / "icons.docx"
+            md_path.write_text(ICON_MARKDOWN, encoding="utf-8")
+
+            convert_file(md_path, out_path)
+
+            document_xml = self._document_xml(out_path)
+            self.assertIn("Shipping ✅", document_xml)
+            self.assertIn("Docs 🔗", document_xml)
+            self.assertIn("⚠️ Warning section", document_xml)
+            self.assertIn("ℹ️ Info panel", document_xml)
+            self.assertIn("👉 Start here", document_xml)
+            self.assertIn("💡 Keep it simple", document_xml)
+            self.assertIn("☑ ", document_xml)
+            self.assertIn("☐ ", document_xml)
+
+    def test_icon_map_is_ignored_when_kdp_mode_is_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "icons_no_kdp_map.md"
+            out_path = Path(tmp_dir) / "icons_no_kdp_map.docx"
+            md_path.write_text("Release ✅ and docs 🔗 with 🦉", encoding="utf-8")
+
+            convert_file(
+                md_path,
+                out_path,
+                kdp_safe_icons=False,
+                icon_map={"✅": "[Approved]", "🔗": "(URL)", "🦉": "[Owl]"},
+            )
+
+            document_xml = self._document_xml(out_path)
+            self.assertIn("Release ✅ and docs 🔗 with 🦉", document_xml)
+            self.assertNotIn("[Approved]", document_xml)
+            self.assertNotIn("(URL)", document_xml)
+            self.assertNotIn("[Owl]", document_xml)
+
+    def test_kdp_safe_icons_replace_common_symbols_but_keep_code(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "icons_kdp.md"
+            out_path = Path(tmp_dir) / "icons_kdp.docx"
+            md_path.write_text(ICON_MARKDOWN, encoding="utf-8")
+
+            convert_file(md_path, out_path, kdp_safe_icons=True)
+
+            document_xml = self._document_xml(out_path)
+            self.assertIn("Shipping [OK]", document_xml)
+            self.assertIn("Docs [Link]", document_xml)
+            self.assertIn("[Warning] Warning section", document_xml)
+            self.assertIn("[Info] Info panel", document_xml)
+            self.assertIn("-&gt; Start here", document_xml)
+            self.assertIn("[Tip] Keep it simple", document_xml)
+            self.assertIn("[x] ", document_xml)
+            self.assertIn("[ ] ", document_xml)
+            self.assertIn("Code [OK] keeps emoji", document_xml)
+
+    def test_kdp_safe_icons_cover_generic_semantics_and_zwj_variants(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "icons_generic_kdp.md"
+            out_path = Path(tmp_dir) / "icons_generic_kdp.docx"
+            md_path.write_text(GENERIC_ICON_MARKDOWN, encoding="utf-8")
+
+            convert_file(md_path, out_path, kdp_safe_icons=True)
+
+            document_xml = self._document_xml(out_path)
+            self.assertIn("Routine [Strength]", document_xml)
+            self.assertIn("[Calm] Reset", document_xml)
+            self.assertIn("[Run] Sprint", document_xml)
+            self.assertIn("[No] Avoid this", document_xml)
+            self.assertIn("[Package] Deliverables", document_xml)
+            self.assertIn("[Refresh] Weekly reset", document_xml)
+            self.assertIn("[Chart] Metrics", document_xml)
+            self.assertIn("[Calendar] Calendar", document_xml)
+            self.assertIn("[Health] Health review", document_xml)
+            self.assertIn("[Meal] Meal prep", document_xml)
+            self.assertIn("[Day] Morning light", document_xml)
+            self.assertIn("[Heart] Encouragement", document_xml)
+            self.assertIn("Code [Calm] keeps emoji", document_xml)
+
+    def test_custom_icon_map_can_override_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "icons_custom.md"
+            out_path = Path(tmp_dir) / "icons_custom.docx"
+            md_path.write_text("Release ✅ and docs 🔗", encoding="utf-8")
+
+            convert_file(
+                md_path,
+                out_path,
+                kdp_safe_icons=True,
+                icon_map={"✅": "[Approved]", "🔗": "(URL)"},
+            )
+
+            document_xml = self._document_xml(out_path)
+            self.assertIn("Release [Approved] and docs (URL)", document_xml)
+            self.assertNotIn("Release [OK] and docs [Link]", document_xml)
+
+    def test_custom_icon_map_can_override_normalized_default_icons(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "icons_custom_zwj.md"
+            out_path = Path(tmp_dir) / "icons_custom_zwj.docx"
+            md_path.write_text("🧘‍♀️ Reset and 🏃‍♀️ sprint", encoding="utf-8")
+
+            convert_file(
+                md_path,
+                out_path,
+                kdp_safe_icons=True,
+                icon_map={"🧘‍♀️": "[Yoga]", "🏃‍♀️": "[Cardio]"},
+            )
+
+            document_xml = self._document_xml(out_path)
+            self.assertIn("[Yoga] Reset and [Cardio] sprint", document_xml)
+            self.assertNotIn("[Calm] Reset and [Run] sprint", document_xml)
+
+    def test_kdp_safe_icons_fallback_to_unicode_names_for_unseen_icons(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "icons_auto_fallback.md"
+            out_path = Path(tmp_dir) / "icons_auto_fallback.docx"
+            md_path.write_text(AUTO_FALLBACK_ICON_MARKDOWN, encoding="utf-8")
+
+            convert_file(md_path, out_path, kdp_safe_icons=True)
+
+            document_xml = self._document_xml(out_path)
+            self.assertIn("Future glyphs [Owl]", document_xml)
+            self.assertIn("[Yarn] Yarn", document_xml)
+            self.assertIn("[Graduation Cap] Study", document_xml)
+            self.assertIn("[Flag US] Flag", document_xml)
+            self.assertIn("[1] First step", document_xml)
+            self.assertIn("Code [Owl] keeps emoji", document_xml)
 
 
 if __name__ == "__main__":
