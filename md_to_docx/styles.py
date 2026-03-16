@@ -1,8 +1,10 @@
 """
 Define and apply Word styles for the converted document.
 """
+from typing import TypedDict
 from docx import Document
-from docx.shared import Pt, RGBColor, Cm
+from docx.shared import Pt, RGBColor, Cm, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
@@ -204,4 +206,100 @@ def add_horizontal_rule(doc):
     pBdr.append(bottom)
     pPr.append(pBdr)
     return p
+
+
+# ---------------------------------------------------------------------------
+# Publishing-quality formatting
+# ---------------------------------------------------------------------------
+
+class _HeadingConfig(TypedDict, total=False):
+    size: Pt
+    bold: bool
+    italic: bool
+    space_before: Pt
+    space_after: Pt
+
+
+_PUBLISH_HEADING_CONFIG: dict[int, _HeadingConfig] = {
+    1: {"size": Pt(22), "bold": True,  "space_before": Pt(24), "space_after": Pt(12)},
+    2: {"size": Pt(18), "bold": True,  "space_before": Pt(18), "space_after": Pt(8)},
+    3: {"size": Pt(14), "bold": True,  "space_before": Pt(14), "space_after": Pt(6)},
+    4: {"size": Pt(12), "bold": True,  "space_before": Pt(12), "space_after": Pt(4), "italic": True},
+    5: {"size": Pt(11), "bold": False, "space_before": Pt(10), "space_after": Pt(4), "italic": True},
+    6: {"size": Pt(11), "bold": False, "space_before": Pt(10), "space_after": Pt(4), "italic": True},
+}
+
+
+def apply_publish_formatting(doc: Document) -> None:
+    """Apply publishing-quality formatting to the document.
+
+    Enhancements applied:
+    - Page margins: 1.25 in left/right, 1 in top/bottom
+    - Body text: 12 pt, 1.5x line spacing, justified alignment, widow/orphan control
+    - Heading hierarchy: scaled sizes, generous spacing, keep-with-next
+    - Centered page-number footer on every section
+    """
+    _set_publish_page_margins(doc)
+    _apply_publish_body_style(doc)
+    _apply_publish_heading_styles(doc)
+    _add_page_number_footer(doc)
+
+
+def _set_publish_page_margins(doc: Document) -> None:
+    """Set publication-standard page margins (1.25 in left/right, 1 in top/bottom)."""
+    for section in doc.sections:
+        section.top_margin = Inches(1.0)
+        section.bottom_margin = Inches(1.0)
+        section.left_margin = Inches(1.25)
+        section.right_margin = Inches(1.25)
+
+
+def _apply_publish_body_style(doc: Document) -> None:
+    """Apply publishing typography to Normal style: 12 pt, 1.5x spacing, justified."""
+    normal = doc.styles["Normal"]
+    normal.font.size = Pt(12)
+    pf = normal.paragraph_format
+    pf.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    pf.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
+    pf.space_after = Pt(6)
+    pf.widow_control = True
+
+
+def _apply_publish_heading_styles(doc: Document) -> None:
+    """Apply publication-quality heading sizes, spacing, and keep-with-next."""
+    for level, cfg in _PUBLISH_HEADING_CONFIG.items():
+        try:
+            style = doc.styles[f"Heading {level}"]
+        except KeyError:
+            continue
+        style.font.size = cfg["size"]
+        style.font.bold = cfg["bold"]
+        if cfg.get("italic"):
+            style.font.italic = True
+        pf = style.paragraph_format
+        pf.space_before = cfg["space_before"]
+        pf.space_after = cfg["space_after"]
+        pf.keep_with_next = True
+        pf.widow_control = True
+
+
+def _add_page_number_footer(doc: Document) -> None:
+    """Add a centered page-number footer to every section."""
+    for section in doc.sections:
+        footer = section.footer
+        footer.is_linked_to_previous = False
+        p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+        p.clear()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run()
+        fldChar_begin = OxmlElement("w:fldChar")
+        fldChar_begin.set(qn("w:fldCharType"), "begin")
+        instr = OxmlElement("w:instrText")
+        instr.set(qn("xml:space"), "preserve")
+        instr.text = " PAGE "
+        fldChar_end = OxmlElement("w:fldChar")
+        fldChar_end.set(qn("w:fldCharType"), "end")
+        run._element.append(fldChar_begin)
+        run._element.append(instr)
+        run._element.append(fldChar_end)
 
