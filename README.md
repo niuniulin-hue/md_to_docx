@@ -27,6 +27,7 @@ Convert **GitHub-Flavored Markdown** (`.md`) files to well-formatted Word docume
 | KDP-safe icon replacement | ✅ |
 | Optional PDF export | ✅ |
 | WeasyPrint Markdown+CSS PDF backend | ✅ |
+| Publishing-quality formatting (`--publish`) | ✅ |
 
 ## Encoding Support
 
@@ -218,6 +219,37 @@ When `--pdf` is enabled:
 - `python convert.py books\ --pdf` writes both `.docx` and `.pdf` for each Markdown file in the folder tree
 - In `--pdf-backend weasyprint` mode, PDF is generated directly from Markdown+HTML+CSS (DOCX generation is skipped)
 
+## Publishing-Quality Formatting (`--publish`)
+
+Pass `--publish` to apply a set of formatting enhancements designed for books, reports, and other print-ready documents:
+
+| Enhancement | Value |
+|---|---|
+| Page margins | 1.25 in left/right, 1 in top/bottom |
+| Body font size | 12 pt |
+| Line spacing | 1.5× |
+| Paragraph alignment | Justified |
+| Widow/orphan control | Enabled |
+| Heading H1 | 22 pt, bold, 24 pt before / 12 pt after |
+| Heading H2 | 18 pt, bold, 18 pt before / 8 pt after |
+| Heading H3 | 14 pt, bold, 14 pt before / 6 pt after |
+| Heading H4 | 12 pt, bold italic, 12 pt before / 4 pt after |
+| Heading H5–H6 | 11 pt, italic, 10 pt before / 4 pt after |
+| Keep-with-next | Enabled for all headings |
+| Footer | Centered page number |
+
+### Example
+
+```bash
+# Produce a publication-ready DOCX
+python convert.py chapter1.md -o chapter1.docx --publish
+
+# Combine with KDP-safe icons and PDF export
+python convert.py book.md -o book.pdf --pdf --publish --kdp-safe-icons
+```
+
+> **Tip:** `--publish` works alongside `--template`. The publish formatting is applied *after* your template's styles are loaded, so page margins, heading sizes, and spacing will be updated even if your template defines them differently.
+
 ## Usage
 
 ```bash
@@ -243,6 +275,9 @@ python convert.py input.md -o output.docx --kdp-safe-icons
 
 # Merge the built-in KDP replacements with your own JSON overrides
 python convert.py input.md -o output.docx --kdp-safe-icons --icon-map icon_map.json
+
+# Apply publishing-quality formatting (margins, typography, heading sizes, page numbers)
+python convert.py input.md -o output.docx --publish
 
 # Also export PDF via Microsoft Word automation
 python convert.py input.md --pdf

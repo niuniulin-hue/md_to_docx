@@ -1197,6 +1197,7 @@ def convert_file(
     *,
     kdp_safe_icons: bool = False,
     icon_map: dict[str, str] | None = None,
+    publish_mode: bool = False,
 ) -> DecodedMarkdown:
     """Convert a single Markdown file to DOCX."""
     import mistune
@@ -1227,6 +1228,7 @@ def convert_file(
         doc,
         kdp_safe_icons=kdp_safe_icons,
         icon_map=effective_icon_map,
+        publish_mode=publish_mode,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out_path))
@@ -1243,6 +1245,7 @@ def convert_file_to_pdf(
     *,
     kdp_safe_icons: bool = False,
     icon_map: dict[str, str] | None = None,
+    publish_mode: bool = False,
     pdf_timeout_seconds: int = PDF_EXPORT_TIMEOUT_SECONDS,
     pdf_backend: str = PDF_BACKEND_AUTO,
     soffice_path: str | None = None,
@@ -1272,6 +1275,7 @@ def convert_file_to_pdf(
         encoding=encoding,
         kdp_safe_icons=kdp_safe_icons,
         icon_map=icon_map,
+        publish_mode=publish_mode,
     )
     export_docx_to_pdf(
         docx_path,
@@ -1315,6 +1319,15 @@ def main():
         "--icon-map",
         help="Optional UTF-8 JSON file with custom text replacements; requires --kdp-safe-icons",
         default=None,
+    )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help=(
+            "Apply publishing-quality formatting: 1.25-in margins, 12 pt body text, "
+            "1.5x line spacing, justified alignment, scaled heading hierarchy, "
+            "widow/orphan control, and a centered page-number footer"
+        ),
     )
     parser.add_argument(
         "--pdf",
@@ -1401,6 +1414,7 @@ def main():
                     encoding=args.encoding,
                     kdp_safe_icons=args.kdp_safe_icons,
                     icon_map=icon_map,
+                    publish_mode=args.publish,
                     pdf_timeout_seconds=args.pdf_timeout,
                     pdf_backend=args.pdf_backend,
                     soffice_path=args.soffice_path,
@@ -1417,6 +1431,7 @@ def main():
                     encoding=args.encoding,
                     kdp_safe_icons=args.kdp_safe_icons,
                     icon_map=icon_map,
+                    publish_mode=args.publish,
                 )
     elif input_path.is_file():
         try:
@@ -1437,6 +1452,7 @@ def main():
                 encoding=args.encoding,
                 kdp_safe_icons=args.kdp_safe_icons,
                 icon_map=icon_map,
+                publish_mode=args.publish,
                 pdf_timeout_seconds=args.pdf_timeout,
                 pdf_backend=args.pdf_backend,
                 soffice_path=args.soffice_path,
@@ -1453,6 +1469,7 @@ def main():
                 encoding=args.encoding,
                 kdp_safe_icons=args.kdp_safe_icons,
                 icon_map=icon_map,
+                publish_mode=args.publish,
             )
     else:
         print(f"Input not found: {input_path}", file=sys.stderr)

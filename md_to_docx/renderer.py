@@ -25,6 +25,7 @@ from docx.oxml import OxmlElement
 
 from .styles import (
     apply_styles,
+    apply_publish_formatting,
     add_paragraph_shading,
     add_left_border,
     add_horizontal_rule,
@@ -360,11 +361,14 @@ def ast_to_docx(
     *,
     kdp_safe_icons: bool = False,
     icon_map: Mapping[str, str] | None = None,
+    publish_mode: bool = False,
 ) -> DocxDocument:
     """Convert a mistune token list to a python-docx Document."""
     if doc is None:
         doc = Document()
     apply_styles(doc)
+    if publish_mode:
+        apply_publish_formatting(doc)
     ctx = _Context(
         doc,
         text_replacements=build_text_replacements(

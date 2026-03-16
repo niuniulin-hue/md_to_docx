@@ -708,6 +708,93 @@ class MultilingualEncodingTests(unittest.TestCase):
 
             self.assertEqual(context.exception.code, 2)
 
+    def test_publish_mode_applies_page_margins(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "publish_margins.md"
+            out_path = Path(tmp_dir) / "publish_margins.docx"
+            md_path.write_text("# Hello\n\nBody text.\n", encoding="utf-8")
+
+            convert_file(md_path, out_path, publish_mode=True)
+
+            doc = Document(str(out_path))
+            section = doc.sections[0]
+            from docx.shared import Inches
+            self.assertAlmostEqual(section.left_margin.inches, 1.25, places=1)
+            self.assertAlmostEqual(section.right_margin.inches, 1.25, places=1)
+            self.assertAlmostEqual(section.top_margin.inches, 1.0, places=1)
+            self.assertAlmostEqual(section.bottom_margin.inches, 1.0, places=1)
+
+    def test_publish_mode_applies_body_font_size(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "publish_font.md"
+            out_path = Path(tmp_dir) / "publish_font.docx"
+            md_path.write_text("# Title\n\nParagraph body.\n", encoding="utf-8")
+
+            convert_file(md_path, out_path, publish_mode=True)
+
+            doc = Document(str(out_path))
+            from docx.shared import Pt
+            normal = doc.styles["Normal"]
+            self.assertEqual(normal.font.size, Pt(12))
+
+    def test_publish_mode_adds_page_number_footer(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "publish_footer.md"
+            out_path = Path(tmp_dir) / "publish_footer.docx"
+            md_path.write_text("# Title\n\nSome content.\n", encoding="utf-8")
+
+            convert_file(md_path, out_path, publish_mode=True)
+
+            import zipfile
+            with zipfile.ZipFile(out_path) as z:
+                footer_xml = z.read("word/footer1.xml").decode("utf-8")
+            self.assertIn("PAGE", footer_xml)
+
+    def test_publish_mode_applies_heading_spacing(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "publish_headings.md"
+            out_path = Path(tmp_dir) / "publish_headings.docx"
+            md_path.write_text("# H1\n\n## H2\n\n### H3\n", encoding="utf-8")
+
+            convert_file(md_path, out_path, publish_mode=True)
+
+            doc = Document(str(out_path))
+            from docx.shared import Pt
+            h1 = doc.styles["Heading 1"]
+            self.assertEqual(h1.font.size, Pt(22))
+            self.assertEqual(h1.paragraph_format.space_before, Pt(24))
+            h2 = doc.styles["Heading 2"]
+            self.assertEqual(h2.font.size, Pt(18))
+
+    def test_publish_mode_off_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "no_publish.md"
+            out_path = Path(tmp_dir) / "no_publish.docx"
+            md_path.write_text("# Title\n\nBody.\n", encoding="utf-8")
+
+            convert_file(md_path, out_path)
+
+            doc = Document(str(out_path))
+            from docx.shared import Pt
+            normal = doc.styles["Normal"]
+            # Without publish mode, Normal font size is left as the Word default (None = inherited)
+            self.assertIsNone(normal.font.size)
+
+    def test_main_publish_flag_produces_formatted_docx(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "cli_publish.md"
+            out_path = Path(tmp_dir) / "cli_publish.docx"
+            md_path.write_text("# Book\n\nChapter text.\n", encoding="utf-8")
+
+            argv = ["convert.py", str(md_path), "-o", str(out_path), "--publish"]
+            with patch("sys.argv", argv):
+                main()
+
+            self.assertTrue(out_path.exists())
+            doc = Document(str(out_path))
+            from docx.shared import Pt
+            self.assertEqual(doc.styles["Normal"].font.size, Pt(12))
+
 
 if __name__ == "__main__":
     unittest.main()
