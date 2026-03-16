@@ -25,6 +25,8 @@ Convert **GitHub-Flavored Markdown** (`.md`) files to well-formatted Word docume
 | German / Deutsch | ✅ |
 | Encoding auto-detection | ✅ |
 | KDP-safe icon replacement | ✅ |
+| Optional PDF export | ✅ |
+| WeasyPrint Markdown+CSS PDF backend | ✅ |
 
 ## Encoding Support
 
@@ -135,6 +137,81 @@ source .venv/bin/activate   # macOS/Linux
 pip install -r requirements.txt
 ```
 
+## PDF Export
+
+You can now ask the converter to produce a **PDF** in addition to the generated DOCX.
+
+- Default behavior stays the same: without `--pdf`, it only writes a `.docx`
+- With `--pdf`, it first generates the styled `.docx`, then exports that document to `.pdf`
+- `--pdf-backend auto` now tries **LibreOffice/OpenOffice first** when available, then falls back to **Microsoft Word automation** on Windows
+- You can force a backend explicitly with `--pdf-backend libreoffice`, `--pdf-backend word`, or `--pdf-backend weasyprint`
+- If LibreOffice is installed outside `PATH`, you can point to it with `--soffice-path`
+- `--pdf-backend weasyprint` uses **Markdown -> HTML -> WeasyPrint -> PDF** and supports additional CSS via `--pdf-css`
+
+### Examples
+
+```bash
+# Generate README.docx and README.pdf side-by-side
+python convert.py README.md --pdf
+
+# Pick the final PDF path explicitly; the intermediate DOCX will use the same stem
+python convert.py README.md -o dist\README-kdp.pdf --pdf
+
+# If you pass a .docx output while using --pdf, the PDF will use the same stem
+python convert.py README.md -o dist\README-kdp.docx --pdf
+
+# Shorten the watchdog if Word export is hanging in your environment
+python convert.py README.md --pdf --pdf-timeout 30
+
+# Force LibreOffice/OpenOffice instead of Word
+python convert.py README.md --pdf --pdf-backend libreoffice
+
+# Point to a specific LibreOffice executable
+python convert.py README.md --pdf --pdf-backend libreoffice --soffice-path "C:\Program Files\LibreOffice\program\soffice.com"
+
+# High-quality print layout via WeasyPrint + CSS
+python convert.py README.md --pdf --pdf-backend weasyprint --pdf-css styles\book.css
+
+# Multiple CSS files are allowed; pass --pdf-css repeatedly
+python convert.py README.md --pdf --pdf-backend weasyprint --pdf-css styles\base.css --pdf-css styles\kdp.css
+
+# Resolve relative images/fonts from a custom base path in WeasyPrint mode
+python convert.py README.md --pdf --pdf-backend weasyprint --pdf-base-url "C:\Code\md_to_docx"
+```
+
+### WeasyPrint on Windows — GTK3 setup (one-time)
+
+`pip install weasyprint` only installs the Python package. WeasyPrint also needs the **GTK3 system libraries** (`libgobject`, `libpango`, `libcairo`) which must be on your `PATH`.
+
+**Option A — standalone installer (simplest)**
+
+1. Download the latest `gtk3-runtime-*-x64.exe` from:  
+   <https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releases>
+2. Run the installer → tick **"Add to PATH for all users"** (or current user).
+3. Close and reopen your terminal so the new `PATH` takes effect.
+4. Retry:
+   ```powershell
+   python convert.py book.md --pdf --pdf-backend weasyprint
+   ```
+
+**Option B — MSYS2** (if already installed)
+
+```bash
+# In an MSYS2 MinGW64 shell:
+pacman -S mingw-w64-x86_64-gtk3 mingw-w64-x86_64-python-weasyprint
+```
+
+Then add `C:\msys64\mingw64\bin` to your Windows `PATH` and retry from a normal terminal.
+
+> Full WeasyPrint installation guide: <https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#windows>
+
+When `--pdf` is enabled:
+
+- `python convert.py book.md --pdf` writes `book.docx` and `book.pdf`
+- `python convert.py book.md -o final.pdf --pdf` writes `final.docx` and `final.pdf`
+- `python convert.py books\ --pdf` writes both `.docx` and `.pdf` for each Markdown file in the folder tree
+- In `--pdf-backend weasyprint` mode, PDF is generated directly from Markdown+HTML+CSS (DOCX generation is skipped)
+
 ## Usage
 
 ```bash
@@ -160,6 +237,19 @@ python convert.py input.md -o output.docx --kdp-safe-icons
 
 # Merge the built-in KDP replacements with your own JSON overrides
 python convert.py input.md -o output.docx --kdp-safe-icons --icon-map icon_map.json
+
+# Also export PDF via Microsoft Word automation
+python convert.py input.md --pdf
+
+# Choose the final PDF filename explicitly
+python convert.py input.md -o output.pdf --pdf
+
+# Fail faster if Word gets stuck on a hidden export dialog
+python convert.py input.md --pdf --pdf-timeout 30
+
+# Force a specific PDF backend
+python convert.py input.md --pdf --pdf-backend libreoffice
+python convert.py input.md --pdf --pdf-backend word
 ```
 
 ## Project Structure
@@ -182,3 +272,4 @@ md_to_docx/
 2. **Decode** — `convert.py` detects BOMs, tries UTF-8 first, uses charset detection, and falls back to common Traditional Chinese / Japanese / Western encodings.
 3. **Render** — The AST walker in `renderer.py` maps each token type to the appropriate `python-docx` API calls.
 4. **Style** — `styles.py` defines custom Word paragraph/character styles and multilingual font mappings for Latin and CJK text.
+5. **Export PDF (optional)** — if `--pdf` is enabled, the generated DOCX is exported via the selected backend. In `auto` mode the converter tries LibreOffice/OpenOffice first when found, then Word on Windows.

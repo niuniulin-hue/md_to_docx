@@ -3,11 +3,23 @@ from __future__ import annotations
 import tempfile
 import unittest
 import zipfile
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from docx import Document
 
-from convert import convert_file, read_markdown_text
+from convert import (
+    PDF_BACKEND_WEASYPRINT,
+    convert_file,
+    convert_file_to_pdf,
+    export_markdown_to_pdf_via_weasyprint,
+    export_docx_to_pdf,
+    main,
+    read_markdown_text,
+    resolve_output_targets,
+)
 
 
 MULTILINGUAL_TEXT = """# 多語言測試 / Multilingual Test
@@ -79,6 +91,7 @@ AUTO_FALLBACK_ICON_MARKDOWN = """# Future glyphs 🦉
 
 `Code 🦉 keeps emoji`
 """
+WEASY_MARKDOWN = "# Weasy ✅\n\nBody with [link 🔗](https://example.com).\n"
 
 
 class MultilingualEncodingTests(unittest.TestCase):
@@ -284,6 +297,348 @@ class MultilingualEncodingTests(unittest.TestCase):
             self.assertIn("[Flag US] Flag", document_xml)
             self.assertIn("[1] First step", document_xml)
             self.assertIn("Code [Owl] keeps emoji", document_xml)
+
+    def test_resolve_output_targets_defaults_to_matching_docx_and_pdf(self):
+        source = Path("book.md")
+
+        docx_only = resolve_output_targets(source)
+        with_pdf = resolve_output_targets(source, pdf=True)
+
+        self.assertEqual(docx_only.docx_path, Path("book.docx"))
+        self.assertIsNone(docx_only.pdf_path)
+        self.assertEqual(with_pdf.docx_path, Path("book.docx"))
+        self.assertEqual(with_pdf.pdf_path, Path("book.pdf"))
+
+    def test_resolve_output_targets_accepts_explicit_pdf_output(self):
+        targets = resolve_output_targets(
+            Path("book.md"),
+            Path("dist/final-kdp.pdf"),
+            pdf=True,
+        )
+
+        self.assertEqual(targets.docx_path, Path("dist/final-kdp.docx"))
+        self.assertEqual(targets.pdf_path, Path("dist/final-kdp.pdf"))
+
+    def test_resolve_output_targets_rejects_unsupported_extension_for_pdf(self):
+        with self.assertRaises(ValueError):
+            resolve_output_targets(Path("book.md"), Path("out.txt"), pdf=True)
+
+    def test_convert_file_to_pdf_exports_pdf_after_docx_generation(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "pdf_source.md"
+            docx_path = Path(tmp_dir) / "pdf_source.docx"
+            pdf_path = Path(tmp_dir) / "pdf_source.pdf"
+            md_path.write_text("# PDF export\n\nHello world ✅", encoding="utf-8")
+
+            def fake_export(
+                resolved_docx: Path,
+                resolved_pdf: Path,
+                *,
+                timeout_seconds: int,
+                pdf_backend: str,
+                soffice_path: str | None,
+            ) -> None:
+                self.assertTrue(resolved_docx.exists())
+                self.assertGreater(timeout_seconds, 0)
+                self.assertEqual(pdf_backend, "auto")
+                self.assertIsNone(soffice_path)
+                resolved_pdf.write_bytes(b"%PDF-1.4\n% fake test pdf\n")
+
+            with patch("convert.export_docx_to_pdf", side_effect=fake_export) as mocked_export:
+                decoded = convert_file_to_pdf(md_path, docx_path, pdf_path, kdp_safe_icons=True)
+
+            self.assertEqual(decoded.encoding.lower(), "utf-8")
+            self.assertTrue(docx_path.exists())
+            self.assertTrue(pdf_path.exists())
+            mocked_export.assert_called_once_with(
+                docx_path,
+                pdf_path,
+                timeout_seconds=120,
+                pdf_backend="auto",
+                soffice_path=None,
+            )
+
+    def test_convert_file_to_pdf_weasyprint_bypasses_docx_export(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "weasy_source.md"
+            docx_path = Path(tmp_dir) / "weasy_source.docx"
+            pdf_path = Path(tmp_dir) / "weasy_source.pdf"
+            md_path.write_text(WEASY_MARKDOWN, encoding="utf-8")
+
+            with patch("convert.export_markdown_to_pdf_via_weasyprint") as mocked_weasy:
+                mocked_weasy.return_value = SimpleNamespace(encoding="utf-8")
+                convert_file_to_pdf(
+                    md_path,
+                    docx_path,
+                    pdf_path,
+                    pdf_backend=PDF_BACKEND_WEASYPRINT,
+                )
+
+            mocked_weasy.assert_called_once_with(
+                md_path,
+                pdf_path,
+                encoding=None,
+                kdp_safe_icons=False,
+                icon_map=None,
+                css_paths=(),
+                base_url=None,
+            )
+
+    def test_export_markdown_to_pdf_via_weasyprint_applies_kdp_mapping(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "weasy_icons.md"
+            pdf_path = Path(tmp_dir) / "weasy_icons.pdf"
+            css_path = Path(tmp_dir) / "book.css"
+            md_path.write_text("# Ship ✅\n\nDocs 🔗\n", encoding="utf-8")
+            css_path.write_text("body { font-size: 12pt; }", encoding="utf-8")
+
+            seen: dict[str, object] = {}
+
+            class FakeCSS:
+                def __init__(self, filename: str):
+                    seen["css_filename"] = filename
+
+            class FakeHTML:
+                def __init__(self, *, string: str, base_url: str):
+                    seen["html_string"] = string
+                    seen["base_url"] = base_url
+
+                def write_pdf(self, target: str, *, stylesheets: list[object]) -> None:
+                    seen["target"] = target
+                    seen["stylesheets_count"] = len(stylesheets)
+                    Path(target).write_bytes(b"%PDF-1.4\n% weasy fake\n")
+
+            with patch.dict("sys.modules", {"weasyprint": SimpleNamespace(HTML=FakeHTML, CSS=FakeCSS)}):
+                decoded = export_markdown_to_pdf_via_weasyprint(
+                    md_path,
+                    pdf_path,
+                    kdp_safe_icons=True,
+                    css_paths=(css_path,),
+                )
+
+            self.assertEqual(decoded.encoding.lower(), "utf-8")
+            self.assertTrue(pdf_path.exists())
+            html_string = str(seen["html_string"])
+            self.assertIn("Ship [OK]", html_string)
+            self.assertIn("Docs [Link]", html_string)
+            self.assertEqual(seen["target"], str(pdf_path))
+            self.assertEqual(seen["stylesheets_count"], 1)
+            self.assertEqual(seen["css_filename"], str(css_path))
+            self.assertEqual(seen["base_url"], str(md_path.parent.resolve()))
+
+    def test_export_docx_to_pdf_uses_worker_subprocess(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "worker.docx"
+            pdf_path = Path(tmp_dir) / "worker.pdf"
+            docx_path.write_bytes(b"fake-docx")
+
+            with patch("convert.find_soffice_executable", return_value=None):
+                with patch(
+                    "convert.subprocess.run",
+                    return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+                ) as mocked_run:
+                    export_docx_to_pdf(docx_path, pdf_path, timeout_seconds=5)
+
+            self.assertEqual(mocked_run.call_count, 1)
+            command = mocked_run.call_args.args[0]
+            self.assertIn("--pdf-export-worker", command)
+            self.assertIn(str(docx_path), command)
+            self.assertIn(str(pdf_path), command)
+
+    def test_export_docx_to_pdf_auto_falls_back_from_libreoffice_to_word(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "worker_fallback.docx"
+            pdf_path = Path(tmp_dir) / "worker_fallback.pdf"
+            docx_path.write_bytes(b"fake-docx")
+
+            with patch("convert.find_soffice_executable", return_value=Path("C:/LibreOffice/program/soffice.exe")):
+                with patch(
+                    "convert._export_docx_to_pdf_via_libreoffice",
+                    side_effect=RuntimeError("LibreOffice failed"),
+                ) as mocked_lo:
+                    with patch("convert._export_docx_to_pdf_via_word") as mocked_word:
+                        export_docx_to_pdf(docx_path, pdf_path, timeout_seconds=5)
+
+            mocked_lo.assert_called_once_with(
+                docx_path,
+                pdf_path,
+                timeout_seconds=5,
+                soffice_path=None,
+            )
+            mocked_word.assert_called_once_with(
+                docx_path,
+                pdf_path,
+                timeout_seconds=5,
+            )
+
+    def test_export_docx_to_pdf_times_out_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            docx_path = Path(tmp_dir) / "worker_timeout.docx"
+            pdf_path = Path(tmp_dir) / "worker_timeout.pdf"
+            docx_path.write_bytes(b"fake-docx")
+
+            with patch(
+                "convert.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd=["python"], timeout=1),
+            ):
+                with patch("convert._kill_word_process") as mocked_kill:
+                    with self.assertRaises(RuntimeError) as context:
+                        export_docx_to_pdf(docx_path, pdf_path, timeout_seconds=1)
+
+            self.assertIn("timed out", str(context.exception).lower())
+            mocked_kill.assert_called_once()
+
+    def test_main_supports_pdf_output_path_for_single_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "cli_pdf.md"
+            pdf_path = Path(tmp_dir) / "exports" / "cli_pdf.pdf"
+            docx_path = pdf_path.with_suffix(".docx")
+            md_path.write_text("# CLI PDF\n\nGenerated via --pdf", encoding="utf-8")
+
+            def fake_export(
+                resolved_docx: Path,
+                resolved_pdf: Path,
+                *,
+                timeout_seconds: int,
+                pdf_backend: str,
+                soffice_path: str | None,
+            ) -> None:
+                self.assertEqual(resolved_docx, docx_path)
+                self.assertEqual(timeout_seconds, 120)
+                self.assertEqual(pdf_backend, "auto")
+                self.assertIsNone(soffice_path)
+                resolved_pdf.parent.mkdir(parents=True, exist_ok=True)
+                resolved_pdf.write_bytes(b"%PDF-1.4\n% cli test pdf\n")
+
+            argv = ["convert.py", str(md_path), "-o", str(pdf_path), "--pdf"]
+            with patch("convert.export_docx_to_pdf", side_effect=fake_export):
+                with patch("sys.argv", argv):
+                    main()
+
+            self.assertTrue(docx_path.exists())
+            self.assertTrue(pdf_path.exists())
+
+    def test_main_passes_pdf_timeout_to_export(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "cli_pdf_timeout.md"
+            pdf_path = Path(tmp_dir) / "cli_pdf_timeout.pdf"
+            docx_path = pdf_path.with_suffix(".docx")
+            md_path.write_text("# CLI PDF timeout\n\nGenerated via --pdf-timeout", encoding="utf-8")
+
+            seen: dict[str, object] = {}
+
+            def fake_export(
+                resolved_docx: Path,
+                resolved_pdf: Path,
+                *,
+                timeout_seconds: int,
+                pdf_backend: str,
+                soffice_path: str | None,
+            ) -> None:
+                seen["docx"] = resolved_docx
+                seen["pdf"] = resolved_pdf
+                seen["timeout"] = timeout_seconds
+                seen["backend"] = pdf_backend
+                seen["soffice_path"] = soffice_path
+                resolved_pdf.write_bytes(b"%PDF-1.4\n% timeout cli test pdf\n")
+
+            argv = [
+                "convert.py",
+                str(md_path),
+                "-o",
+                str(pdf_path),
+                "--pdf",
+                "--pdf-timeout",
+                "7",
+            ]
+            with patch("convert.export_docx_to_pdf", side_effect=fake_export):
+                with patch("sys.argv", argv):
+                    main()
+
+            self.assertEqual(seen["docx"], docx_path)
+            self.assertEqual(seen["pdf"], pdf_path)
+            self.assertEqual(seen["timeout"], 7)
+            self.assertEqual(seen["backend"], "auto")
+            self.assertIsNone(seen["soffice_path"])
+            self.assertTrue(pdf_path.exists())
+
+    def test_main_weasy_backend_forwards_css_and_base_url(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "cli_weasy.md"
+            pdf_path = Path(tmp_dir) / "cli_weasy.pdf"
+            css_path = Path(tmp_dir) / "book.css"
+            md_path.write_text("# Weasy ✅", encoding="utf-8")
+            css_path.write_text("body { font-size: 12pt; }", encoding="utf-8")
+
+            seen: dict[str, object] = {}
+
+            def fake_weasy(
+                resolved_md: Path,
+                resolved_pdf: Path,
+                *,
+                encoding: str | None,
+                kdp_safe_icons: bool,
+                icon_map: dict[str, str] | None,
+                css_paths: tuple[Path, ...],
+                base_url: str | None,
+            ) -> SimpleNamespace:
+                seen["md"] = resolved_md
+                seen["pdf"] = resolved_pdf
+                seen["encoding"] = encoding
+                seen["kdp_safe_icons"] = kdp_safe_icons
+                seen["icon_map"] = icon_map
+                seen["css_paths"] = css_paths
+                seen["base_url"] = base_url
+                resolved_pdf.write_bytes(b"%PDF-1.4\n% cli weasy\n")
+                return SimpleNamespace(encoding="utf-8")
+
+            argv = [
+                "convert.py",
+                str(md_path),
+                "-o",
+                str(pdf_path),
+                "--pdf",
+                "--pdf-backend",
+                PDF_BACKEND_WEASYPRINT,
+                "--pdf-css",
+                str(css_path),
+                "--pdf-base-url",
+                str(md_path.parent),
+            ]
+
+            with patch("convert.export_markdown_to_pdf_via_weasyprint", side_effect=fake_weasy):
+                with patch("sys.argv", argv):
+                    main()
+
+            self.assertEqual(seen["md"], md_path)
+            self.assertEqual(seen["pdf"], pdf_path)
+            self.assertIsNone(seen["encoding"])
+            self.assertFalse(seen["kdp_safe_icons"])
+            self.assertIsNone(seen["icon_map"])
+            self.assertEqual(seen["css_paths"], (css_path,))
+            self.assertEqual(seen["base_url"], str(md_path.parent))
+            self.assertTrue(pdf_path.exists())
+
+    def test_main_rejects_pdf_css_without_weasy_backend(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "cli_invalid_css.md"
+            css_path = Path(tmp_dir) / "book.css"
+            md_path.write_text("# Invalid", encoding="utf-8")
+            css_path.write_text("body { color: #111; }", encoding="utf-8")
+
+            argv = [
+                "convert.py",
+                str(md_path),
+                "--pdf",
+                "--pdf-css",
+                str(css_path),
+            ]
+
+            with patch("sys.argv", argv):
+                with self.assertRaises(SystemExit) as context:
+                    main()
+
+            self.assertEqual(context.exception.code, 2)
 
 
 if __name__ == "__main__":
