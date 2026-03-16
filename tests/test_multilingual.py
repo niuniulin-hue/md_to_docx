@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import convert
 from docx import Document
 
 from convert import (
@@ -382,6 +383,8 @@ class MultilingualEncodingTests(unittest.TestCase):
                 icon_map=None,
                 css_paths=(),
                 base_url=None,
+                color_emoji_images=False,
+                emoji_cdn_base="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg",
             )
 
     def test_export_markdown_to_pdf_via_weasyprint_applies_kdp_mapping(self):
@@ -432,6 +435,55 @@ class MultilingualEncodingTests(unittest.TestCase):
             self.assertEqual(seen["stylesheets_count"], 1)
             self.assertEqual(seen["css_filename"], str(css_path))
             self.assertEqual(seen["base_url"], str(md_path.parent.resolve()))
+
+    def test_export_markdown_to_pdf_via_weasyprint_color_emoji_images(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            md_path = Path(tmp_dir) / "weasy_emoji.md"
+            pdf_path = Path(tmp_dir) / "weasy_emoji.pdf"
+            md_path.write_text("# Ship ✅\n\nDocs 🔗\n\n`Code ✅`\n", encoding="utf-8")
+
+            seen: dict[str, object] = {}
+
+            class FakeCSS:
+                def __init__(self, filename: str):
+                    self.filename = filename
+
+            class FakeHTML:
+                def __init__(self, *, string: str, base_url: str):
+                    seen["html_string"] = string
+                    seen["base_url"] = base_url
+
+                def write_pdf(self, target: str, *, stylesheets: list[object]) -> None:
+                    seen["target"] = target
+                    Path(target).write_bytes(b"%PDF-1.4\n% weasy fake\n")
+
+            with patch("convert._resolve_twemoji_svg_image_src", return_value="data:image/svg+xml;base64,PHN2Zy8+"):
+                with patch.dict("sys.modules", {"weasyprint": SimpleNamespace(HTML=FakeHTML, CSS=FakeCSS)}):
+                    export_markdown_to_pdf_via_weasyprint(
+                        md_path,
+                        pdf_path,
+                    )
+
+            html_string = str(seen["html_string"])
+            self.assertIn('class="emoji"', html_string)
+            self.assertIn("data:image/svg+xml;base64,PHN2Zy8+", html_string)
+            self.assertIn("<code>Code ✅</code>", html_string)
+            self.assertNotIn("<code>Code <img", html_string)
+
+    def test_resolve_twemoji_svg_image_src_embeds_svg_data_uri(self):
+        fake_response = SimpleNamespace(content=b"<svg xmlns='http://www.w3.org/2000/svg'></svg>")
+        fake_response.raise_for_status = lambda: None
+
+        with patch("requests.get", return_value=fake_response) as mocked_get:
+            src = convert._resolve_twemoji_svg_image_src(
+                "✅",
+                asset_base="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg",
+                cache={},
+            )
+
+        self.assertIsNotNone(src)
+        self.assertTrue(str(src).startswith("data:image/svg+xml;base64,"))
+        mocked_get.assert_called_once()
 
     def test_export_docx_to_pdf_uses_worker_subprocess(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -588,6 +640,8 @@ class MultilingualEncodingTests(unittest.TestCase):
                 icon_map: dict[str, str] | None,
                 css_paths: tuple[Path, ...],
                 base_url: str | None,
+                color_emoji_images: bool,
+                emoji_cdn_base: str,
             ) -> SimpleNamespace:
                 seen["md"] = resolved_md
                 seen["pdf"] = resolved_pdf
@@ -596,6 +650,8 @@ class MultilingualEncodingTests(unittest.TestCase):
                 seen["icon_map"] = icon_map
                 seen["css_paths"] = css_paths
                 seen["base_url"] = base_url
+                seen["color_emoji_images"] = color_emoji_images
+                seen["emoji_cdn_base"] = emoji_cdn_base
                 resolved_pdf.write_bytes(b"%PDF-1.4\n% cli weasy\n")
                 return SimpleNamespace(encoding="utf-8")
 
@@ -624,6 +680,11 @@ class MultilingualEncodingTests(unittest.TestCase):
             self.assertIsNone(seen["icon_map"])
             self.assertEqual(seen["css_paths"], (css_path,))
             self.assertEqual(seen["base_url"], str(md_path.parent))
+            self.assertFalse(seen["color_emoji_images"])
+            self.assertEqual(
+                seen["emoji_cdn_base"],
+                "https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg",
+            )
             self.assertTrue(pdf_path.exists())
 
     def test_main_rejects_pdf_css_without_weasy_backend(self):

@@ -147,6 +147,7 @@ You can now ask the converter to produce a **PDF** in addition to the generated 
 - You can force a backend explicitly with `--pdf-backend libreoffice`, `--pdf-backend word`, or `--pdf-backend weasyprint`
 - If LibreOffice is installed outside `PATH`, you can point to it with `--soffice-path`
 - `--pdf-backend weasyprint` uses **Markdown -> HTML -> WeasyPrint -> PDF** and supports additional CSS via `--pdf-css`
+- In WeasyPrint mode, if you do **not** use `--kdp-safe-icons`, original emoji/icons are preserved as **embedded color SVG images** by default so PDF output keeps their color more reliably
 
 ### Examples
 
@@ -177,7 +178,12 @@ python convert.py README.md --pdf --pdf-backend weasyprint --pdf-css styles\base
 
 # Resolve relative images/fonts from a custom base path in WeasyPrint mode
 python convert.py README.md --pdf --pdf-backend weasyprint --pdf-base-url "C:\Code\md_to_docx"
+
+# Force colored emoji icons via embedded Twemoji image assets
+python convert.py README.md --pdf --pdf-backend weasyprint --weasy-color-emoji-images
 ```
+
+By default, WeasyPrint PDF export already uses embedded color emoji/icon images when `--kdp-safe-icons` is **not** enabled. This avoids the common Windows/GTK fallback where emoji become black-and-white glyphs in PDF output. The `--weasy-color-emoji-images` flag is still accepted if you want to make that behavior explicit.
 
 ### WeasyPrint on Windows — GTK3 setup (one-time)
 

@@ -18,6 +18,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import json
 import os
@@ -29,6 +30,8 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from charset_normalizer import from_bytes
 
@@ -621,6 +624,169 @@ def _colorize_icon_labels_in_html(html: str) -> str:
     return "".join(result)
 
 
+def _emoji_cluster_to_twemoji_svg_url(cluster: str, *, base_url: str) -> str | None:
+    """Build a Twemoji SVG URL from an emoji cluster (best-effort)."""
+    normalized = cluster.translate(str.maketrans({"\ufe0e": None, "\ufe0f": None}))
+    if not normalized:
+        return None
+    codepoints = "-".join(f"{ord(ch):x}" for ch in normalized)
+    return f"{base_url.rstrip('/')}/{codepoints}.svg"
+
+
+_HTML_ICON_IMAGE_SKIP_TAGS = {"code", "pre", "kbd", "samp", "script", "style", "textarea", "title"}
+_HTML_VOID_ELEMENTS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "param", "source", "track", "wbr",
+}
+
+
+def _parse_html_tag_name(tag_text: str) -> tuple[str | None, bool, bool]:
+    """Return (name, is_closing, is_self_closing) for a simple HTML tag."""
+    if not tag_text.startswith("<") or not tag_text.endswith(">"):
+        return None, False, False
+
+    inner = tag_text[1:-1].strip()
+    if not inner or inner.startswith(("!", "?")):
+        return None, False, False
+
+    is_closing = inner.startswith("/")
+    if is_closing:
+        inner = inner[1:].lstrip()
+    if not inner:
+        return None, is_closing, False
+
+    name_chars: list[str] = []
+    for ch in inner:
+        if ch.isalnum() or ch in {"-", ":", "_"}:
+            name_chars.append(ch.lower())
+            continue
+        break
+
+    tag_name = "".join(name_chars)
+    if not tag_name:
+        return None, is_closing, False
+
+    is_self_closing = inner.endswith("/") or tag_name in _HTML_VOID_ELEMENTS
+    return tag_name, is_closing, is_self_closing
+
+
+def _resolve_twemoji_svg_image_src(
+    cluster: str,
+    *,
+    asset_base: str,
+    cache: dict[str, str | None],
+) -> str | None:
+    """Resolve a Twemoji SVG to an embeddable image src (prefer data URI)."""
+    normalized = cluster.translate(str.maketrans({"\ufe0e": None, "\ufe0f": None}))
+    if not normalized:
+        return None
+
+    cache_key = f"{asset_base}\0{normalized}"
+    if cache_key in cache:
+        return cache[cache_key]
+
+    codepoints = "-".join(f"{ord(ch):x}" for ch in normalized)
+    asset_name = f"{codepoints}.svg"
+    parsed_base = urlparse(asset_base)
+
+    try:
+        svg_bytes: bytes | None = None
+        fallback_url: str | None = None
+
+        if parsed_base.scheme in {"http", "https"}:
+            fallback_url = f"{asset_base.rstrip('/')}/{asset_name}"
+            import requests
+
+            response = requests.get(fallback_url, timeout=15)
+            response.raise_for_status()
+            svg_bytes = response.content
+        else:
+            if parsed_base.scheme == "file":
+                base_path = Path(url2pathname(parsed_base.path))
+            else:
+                base_path = Path(asset_base)
+            asset_path = base_path / asset_name
+            if asset_path.is_file():
+                svg_bytes = asset_path.read_bytes()
+
+        if svg_bytes:
+            encoded = base64.b64encode(svg_bytes).decode("ascii")
+            cache[cache_key] = f"data:image/svg+xml;base64,{encoded}"
+        else:
+            cache[cache_key] = fallback_url
+    except Exception:
+        cache[cache_key] = _emoji_cluster_to_twemoji_svg_url(cluster, base_url=asset_base)
+
+    return cache[cache_key]
+
+
+def _replace_emoji_with_color_images_in_html(
+    html: str,
+    *,
+    emoji_cdn_base: str,
+) -> str:
+    """Replace emoji clusters in HTML text nodes with color image tags."""
+    from md_to_docx import renderer as renderer_module
+
+    if not html:
+        return html
+
+    result: list[str] = []
+    open_tags: list[str] = []
+    image_src_cache: dict[str, str | None] = {}
+    i = 0
+    n = len(html)
+
+    while i < n:
+        ch = html[i]
+
+        # Keep HTML tags unchanged.
+        if ch == "<":
+            end = html.find(">", i)
+            if end == -1:
+                result.append(html[i:])
+                break
+            tag_text = html[i : end + 1]
+            tag_name, is_closing, is_self_closing = _parse_html_tag_name(tag_text)
+            if tag_name:
+                if is_closing:
+                    for stack_index in range(len(open_tags) - 1, -1, -1):
+                        if open_tags[stack_index] == tag_name:
+                            del open_tags[stack_index:]
+                            break
+                elif not is_self_closing:
+                    open_tags.append(tag_name)
+            result.append(tag_text)
+            i = end + 1
+            continue
+
+        if any(tag in _HTML_ICON_IMAGE_SKIP_TAGS for tag in open_tags):
+            result.append(ch)
+            i += 1
+            continue
+
+        if not renderer_module._is_icon_like_char(ch) and not renderer_module._starts_keycap_cluster(html, i):
+            result.append(ch)
+            i += 1
+            continue
+
+        cluster, next_i = renderer_module._consume_icon_cluster(html, i)
+        image_src = _resolve_twemoji_svg_image_src(
+            cluster,
+            asset_base=emoji_cdn_base,
+            cache=image_src_cache,
+        )
+        if image_src:
+            alt = html_lib.escape(cluster)
+            escaped_src = html_lib.escape(image_src, quote=True)
+            result.append(f'<img class="emoji" src="{escaped_src}" alt="{alt}" />')
+        else:
+            result.append(cluster)
+        i = next_i
+
+    return "".join(result)
+
+
 _WEASYPRINT_CSS = """\
 @page {
   size: A4;
@@ -733,6 +899,12 @@ li > input[type=checkbox] { margin-right: 6px; }
 
 /* ── Images ───────────────────────────────────────────────────────── */
 img { max-width: 100%; height: auto; }
+.emoji {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.12em;
+  display: inline-block;
+}
 
 /* ── Pagination hints ─────────────────────────────────────────────── */
 p, li, blockquote, table, pre { orphans: 3; widows: 3; }
@@ -944,6 +1116,8 @@ def export_markdown_to_pdf_via_weasyprint(
     icon_map: dict[str, str] | None = None,
     css_paths: tuple[Path, ...] = (),
     base_url: str | None = None,
+    color_emoji_images: bool = False,
+    emoji_cdn_base: str = "https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg",
 ) -> DecodedMarkdown:
     """Export Markdown directly to PDF using WeasyPrint (Markdown -> HTML -> PDF)."""
     # Register GTK3 DLL directories BEFORE the first import of weasyprint so
@@ -963,6 +1137,12 @@ def export_markdown_to_pdf_via_weasyprint(
         title=md_path.stem,
         colorize_icon_labels=kdp_safe_icons,
     )
+    effective_color_emoji_images = color_emoji_images or not kdp_safe_icons
+    if effective_color_emoji_images and not kdp_safe_icons:
+        html_document = _replace_emoji_with_color_images_in_html(
+            html_document,
+            emoji_cdn_base=emoji_cdn_base,
+        )
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -1068,6 +1248,8 @@ def convert_file_to_pdf(
     soffice_path: str | None = None,
     pdf_css_paths: tuple[Path, ...] = (),
     pdf_base_url: str | None = None,
+    weasy_color_emoji_images: bool = False,
+    weasy_emoji_cdn_base: str = "https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg",
 ) -> DecodedMarkdown:
     """Convert a single Markdown file to DOCX and then export it to PDF."""
     if pdf_backend == PDF_BACKEND_WEASYPRINT:
@@ -1079,6 +1261,8 @@ def convert_file_to_pdf(
             icon_map=icon_map,
             css_paths=pdf_css_paths,
             base_url=pdf_base_url,
+            color_emoji_images=weasy_color_emoji_images,
+            emoji_cdn_base=weasy_emoji_cdn_base,
         )
 
     decoded = convert_file(
@@ -1165,6 +1349,16 @@ def main():
         default=None,
         help="Base URL/path for resolving relative assets in weasyprint HTML mode",
     )
+    parser.add_argument(
+        "--weasy-color-emoji-images",
+        action="store_true",
+        help="With weasyprint backend, render emoji as embedded color image assets (Twemoji); this is also auto-enabled unless --kdp-safe-icons is used",
+    )
+    parser.add_argument(
+        "--weasy-emoji-cdn-base",
+        default="https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg",
+        help="Base URL for Twemoji SVG assets used by --weasy-color-emoji-images",
+    )
     args = parser.parse_args()
 
     if args.icon_map and not args.kdp_safe_icons:
@@ -1182,6 +1376,8 @@ def main():
         parser.error("--pdf-css requires --pdf-backend weasyprint")
     if args.pdf_base_url and args.pdf_backend != PDF_BACKEND_WEASYPRINT:
         parser.error("--pdf-base-url requires --pdf-backend weasyprint")
+    if args.weasy_color_emoji_images and args.pdf_backend != PDF_BACKEND_WEASYPRINT:
+        parser.error("--weasy-color-emoji-images requires --pdf-backend weasyprint")
 
     input_path = Path(args.input)
     template = Path(args.template) if args.template else None
@@ -1210,6 +1406,8 @@ def main():
                     soffice_path=args.soffice_path,
                     pdf_css_paths=pdf_css_paths,
                     pdf_base_url=args.pdf_base_url,
+                    weasy_color_emoji_images=args.weasy_color_emoji_images,
+                    weasy_emoji_cdn_base=args.weasy_emoji_cdn_base,
                 )
             else:
                 convert_file(
@@ -1244,6 +1442,8 @@ def main():
                 soffice_path=args.soffice_path,
                 pdf_css_paths=pdf_css_paths,
                 pdf_base_url=args.pdf_base_url,
+                weasy_color_emoji_images=args.weasy_color_emoji_images,
+                weasy_emoji_cdn_base=args.weasy_emoji_cdn_base,
             )
         else:
             convert_file(
